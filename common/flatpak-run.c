@@ -22,6 +22,7 @@
 
 #include "config.h"
 
+#include <systemd/sd-bus.h> // TEMPORARY!
 #include <string.h>
 #include <ctype.h>
 #include <fcntl.h>
@@ -276,6 +277,66 @@ flatpak_run_evaluate_conditions (FlatpakContextConditions condition)
     default:
       return FALSE;
     }
+}
+
+static const char cgroup_v2_prefix[] = "0::";
+#define CGROUP_V2_PREFIX_LEN (sizeof (cgroup_v2_prefix) - 1)
+
+gboolean
+flatpak_attach_firewall_to_cgroup(void){
+
+  /* Get CGroup name */
+  g_autofree char *contents = NULL;
+  if (!g_file_get_contents ("/proc/self/cgroup", &contents, NULL, NULL)) {
+    printf("ERROR NO CGROUP?\n");
+    return FALSE;
+  }
+  
+  g_autofree char** parts = g_strsplit(contents, "\n", -1);
+  char* cgroup_name = NULL;
+  for(int i=0; parts[i]!=NULL; i++){
+    if(g_str_has_prefix(parts[i], cgroup_v2_prefix)){
+      cgroup_name = parts[i] + CGROUP_V2_PREFIX_LEN;
+    }
+  }
+  if(cgroup_name == NULL){
+    return FALSE;
+  }
+  printf("FOUND CGROUP NAME <%s>\n", cgroup_name);
+  g_autofree char *cgroup_full_path = g_strdup_printf("/sys/fs/cgroup%s", cgroup_name); 
+  // Combine with /sys/fs/cgroup
+
+  if(!g_file_test(cgroup_full_path, G_FILE_TEST_EXISTS))
+  {
+    return FALSE;
+  }
+  printf("DOING DBUS CALL!\n");
+  //DBUS CALL!
+  sd_bus_error error = SD_BUS_ERROR_NULL;
+  sd_bus_message *m = NULL;
+  sd_bus *bus = NULL;
+  int success = 0;
+
+  sd_bus_default_user(&bus);
+
+  // Call the method
+  int ret_val = sd_bus_call_method(bus,
+                      "com.fpfwall.fpfwall",      // Service
+                      "/com/fpfwall/firewallApi", // Object path
+                      "com.fpfwall.fpfwall",      // Interface
+                      "AttachFWToCGroup",         // Method
+                      &error,                     // Error return
+                      &m,                         // Response message
+                      "s",                        // Input signature (string)
+                      cgroup_full_path);               // Args
+  if(ret_val<0){
+    printf("GOT ERROR!: %d %s\n", is_err, error.message);
+    //return FALSE;
+  }
+  sd_bus_message_read(m, "b", &success);
+  printf("API returned: %s\n", success ? "True" : "False");
+  sd_bus_unref(bus);
+  return success ? TRUE : FALSE;
 }
 
 /*
@@ -549,8 +610,16 @@ flatpak_run_add_environment_args (FlatpakBwrap           *bwrap,
              really depends on it. Its just nice to have */
           g_info ("Failed to run in transient scope: %s", my_error->message);
           g_clear_error (&my_error);
+          return FALSE;
         }
     }
+  printf("<<< INSTANCE ID: %s APP ID: %s >>>\n", instance_id, app_id);
+  /* Call The thing here */
+  printf("---- CALLING THE THING ----\n");
+  if(!flatpak_attach_firewall_to_cgroup()){
+    g_error("Failed to find CGroup name");
+    return FALSE;
+  }
 
   if (!flatpak_run_maybe_start_dbus_proxy (bwrap, proxy_arg_bwrap,
                                            app_info_path, error))

@@ -127,6 +127,7 @@ gboolean flatpak_run_app (FlatpakDecomposed   *app_ref,
                           GCancellable        *cancellable,
                           GError             **error);
 
+gboolean flatpak_attach_firewall_to_cgroup(void);
 
 FlatpakContextShares flatpak_run_compute_allowed_shares (FlatpakContext *context);
 FlatpakContextDevices flatpak_run_compute_allowed_devices (FlatpakContext *context);
