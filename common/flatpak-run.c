@@ -279,64 +279,40 @@ flatpak_run_evaluate_conditions (FlatpakContextConditions condition)
     }
 }
 
-static const char cgroup_v2_prefix[] = "0::";
-#define CGROUP_V2_PREFIX_LEN (sizeof (cgroup_v2_prefix) - 1)
-
 gboolean
 flatpak_attach_firewall_to_cgroup(void){
 
-  /* Get CGroup name */
-  g_autofree char *contents = NULL;
-  if (!g_file_get_contents ("/proc/self/cgroup", &contents, NULL, NULL)) {
-    printf("ERROR NO CGROUP?\n");
+  g_autoptr(GDBusConnection) system_bus = g_bus_get_sync (G_BUS_TYPE_SYSTEM, NULL, NULL);
+  if(system_bus == NULL){
+    printf("COULD NOT GET DBUS\n");
     return FALSE;
   }
+
+  g_autoptr(FlatpakSystemHelper) system_helper = 
+        flatpak_system_helper_proxy_new_sync (
+          system_bus,
+          G_DBUS_PROXY_FLAGS_NONE,
+          "org.freedesktop.Flatpak.SystemHelper",
+          "/org/freedesktop/Flatpak/SystemHelper",
+          NULL, NULL);
+
+  if(system_helper == NULL){
+    printf("Failed to get system helpter\n");
+    return FALSE;
+  }
+
+  g_autoptr(GError) error = NULL;
+  flatpak_system_helper_call_load_cgroup_firewall_sync (
+        system_helper,
+        NULL,
+        &error);
   
-  g_autofree char** parts = g_strsplit(contents, "\n", -1);
-  char* cgroup_name = NULL;
-  for(int i=0; parts[i]!=NULL; i++){
-    if(g_str_has_prefix(parts[i], cgroup_v2_prefix)){
-      cgroup_name = parts[i] + CGROUP_V2_PREFIX_LEN;
-    }
-  }
-  if(cgroup_name == NULL){
+  if(error != NULL){
+    printf("GOT ERROR ON firewall sync: <%s>\n", error->message);
     return FALSE;
   }
-  printf("FOUND CGROUP NAME <%s>\n", cgroup_name);
-  g_autofree char *cgroup_full_path = g_strdup_printf("/sys/fs/cgroup%s", cgroup_name); 
-  // Combine with /sys/fs/cgroup
 
-  if(!g_file_test(cgroup_full_path, G_FILE_TEST_EXISTS))
-  {
-    return FALSE;
-  }
-  printf("DOING DBUS CALL!\n");
-  //DBUS CALL!
-  sd_bus_error error = SD_BUS_ERROR_NULL;
-  sd_bus_message *m = NULL;
-  sd_bus *bus = NULL;
-  int success = 0;
-
-  sd_bus_default_user(&bus);
-
-  // Call the method
-  int ret_val = sd_bus_call_method(bus,
-                      "com.fpfwall.fpfwall",      // Service
-                      "/com/fpfwall/firewallApi", // Object path
-                      "com.fpfwall.fpfwall",      // Interface
-                      "AttachFWToCGroup",         // Method
-                      &error,                     // Error return
-                      &m,                         // Response message
-                      "s",                        // Input signature (string)
-                      cgroup_full_path);               // Args
-  if(ret_val<0){
-    printf("GOT ERROR!: %d %s\n", is_err, error.message);
-    //return FALSE;
-  }
-  sd_bus_message_read(m, "b", &success);
-  printf("API returned: %s\n", success ? "True" : "False");
-  sd_bus_unref(bus);
-  return success ? TRUE : FALSE;
+  return TRUE;
 }
 
 /*

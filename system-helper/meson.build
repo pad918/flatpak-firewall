@@ -1,6 +1,9 @@
 # Copyright 2022 Collabora Ltd.
 # SPDX-License-Identifier: LGPL-2.1-or-later
 
+ebpf_firewall_subproj = subproject('eBPF-firewall')
+ebpf_firewall_dep = ebpf_firewall_subproj.get_variable('ebpf_firewall_dep')
+
 executable(
   'flatpak-system-helper',
   dependencies : base_deps + [
@@ -11,6 +14,7 @@ executable(
     libglnx_dep,
     libostree_dep,
     polkit_agent_dep,
+    ebpf_firewall_dep,
   ],
   install : true,
   install_dir : get_option('libexecdir'),

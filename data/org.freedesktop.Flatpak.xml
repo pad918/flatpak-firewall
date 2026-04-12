@@ -324,6 +324,9 @@
       <arg type='s' name='src_dir' direction='out'/>
     </method>
 
+    <method name="LoadCGroupFirewall">
+    </method>
+
   </interface>
 
 </node>

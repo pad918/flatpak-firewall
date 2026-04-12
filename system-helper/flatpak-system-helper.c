@@ -46,6 +46,8 @@
 #include "flatpak-utils-base-private.h"
 #include "flatpak-utils-private.h"
 
+#include "loader.h"
+
 static PolkitAuthority *authority = NULL;
 static FlatpakSystemHelper *helper = NULL;
 static GMainLoop *main_loop = NULL;
@@ -307,6 +309,38 @@ get_connection_uid (GDBusMethodInvocation *invocation, uid_t *out_uid, GError **
     {
       g_set_error (error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
                    "Failed to query UnixUserID for the bus name: %s", sender);
+      return FALSE;
+    }
+
+  return TRUE;
+}
+
+/* TODO IMPLEMENT! */
+static gboolean
+get_connection_pid (GDBusMethodInvocation *invocation, guint32 *out_pid, GError **error)
+{
+  GDBusConnection *connection = g_dbus_method_invocation_get_connection (invocation);
+  const gchar *sender = g_dbus_method_invocation_get_sender (invocation);
+  g_autoptr(GVariant) dict = NULL;
+  g_autoptr(GVariant) credentials = NULL;
+
+  credentials = g_dbus_connection_call_sync (connection,
+                                             "org.freedesktop.DBus",
+                                             "/org/freedesktop/DBus",
+                                             "org.freedesktop.DBus",
+                                             "GetConnectionCredentials",
+                                             g_variant_new ("(s)", sender),
+                                             G_VARIANT_TYPE ("(a{sv})"), G_DBUS_CALL_FLAGS_NONE,
+                                             G_MAXINT, NULL, error);
+  if (credentials == NULL)
+    return FALSE;
+
+  dict = g_variant_get_child_value (credentials, 0);
+
+   if (!g_variant_lookup (dict, "ProcessID", "u", out_pid))
+    {
+      g_set_error (error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
+                   "Failed to query PID for the bus name: %s", sender);
       return FALSE;
     }
 
@@ -1213,6 +1247,65 @@ handle_update_remote (FlatpakSystemHelper   *object,
 }
 
 static gboolean
+handle_load_cgroup_firewall(FlatpakSystemHelper   *object,
+                         GDBusMethodInvocation *invocation)
+{
+  guint32 pid=0;
+  g_autoptr(GError) error = NULL;
+  get_connection_pid(invocation, &pid, &error);
+  printf("GOT PID: <%d>\n", pid);
+  if(error != NULL){
+    return G_DBUS_METHOD_INVOCATION_UNHANDLED;
+  }
+  
+  /* Get CGroup name from PID */
+  g_autofree char *contents = NULL;
+  g_autofree char *proc_gcroup_file = g_strdup_printf("/proc/%d/cgroup", pid); 
+  if (!g_file_get_contents (proc_gcroup_file, &contents, NULL, NULL)) {
+    printf("ERROR COULD NOT GET CGROUP\n");
+    return G_DBUS_METHOD_INVOCATION_UNHANDLED;
+  }
+  
+  /* TODO verify PID */
+  static const char cgroup_v2_prefix[] = "0::";
+  #define CGROUP_V2_PREFIX_LEN (sizeof (cgroup_v2_prefix) - 1)
+
+  g_autofree char** parts = g_strsplit(contents, "\n", -1);
+  char* cgroup_name = NULL;
+  for(int i=0; parts[i]!=NULL; i++){
+    if(g_str_has_prefix(parts[i], cgroup_v2_prefix)){
+      cgroup_name = parts[i] + CGROUP_V2_PREFIX_LEN;
+    }
+  }
+
+  if(cgroup_name == NULL){
+    printf("ERROR COULD NOT GET CGROUP\n");
+    return G_DBUS_METHOD_INVOCATION_UNHANDLED;
+  }
+  g_autofree char *cgroup_full_path = g_strdup_printf("/sys/fs/cgroup%s", cgroup_name); 
+  if(!g_file_test(cgroup_full_path, G_FILE_TEST_EXISTS))
+  {
+    printf("ERROR CGROUP FILE DOES NOT EXIST\n");
+    return G_DBUS_METHOD_INVOCATION_UNHANDLED;
+  }
+
+  printf("CGroup path: <%s>\n", cgroup_full_path);
+
+  /* TODO: Verify that the CGroup is of a flatpak app and
+  that it is not running as root */
+
+  /* Apply firewall to the CGroup */
+  int attach_err = attach_firewall_to_cgroup(cgroup_full_path);
+  if(attach_err){
+    printf("COULD NOT ATTACH!\n");
+    return G_DBUS_METHOD_INVOCATION_UNHANDLED;
+  }
+
+  flatpak_system_helper_complete_remove_local_ref (object, invocation);
+  return G_DBUS_METHOD_INVOCATION_HANDLED;
+}
+
+static gboolean
 handle_remove_local_ref (FlatpakSystemHelper   *object,
                          GDBusMethodInvocation *invocation,
                          guint                  arg_flags,
@@ -1872,6 +1965,10 @@ flatpak_authorize_method_handler (GDBusInterfaceSkeleton *interface,
       g_assert (getgid () != 0);
       authorized = TRUE;
     }
+  else if (g_strcmp0 (method_name, "LoadCGroupFirewall") == 0)
+    {
+      authorized = TRUE;
+    }
   else if (g_strcmp0 (method_name, "Deploy") == 0)
     {
       const char *installation;
@@ -2176,6 +2273,7 @@ on_bus_acquired (GDBusConnection *connection,
   g_signal_connect (helper, "handle-configure", G_CALLBACK (handle_configure), NULL);
   g_signal_connect (helper, "handle-update-remote", G_CALLBACK (handle_update_remote), NULL);
   g_signal_connect (helper, "handle-remove-local-ref", G_CALLBACK (handle_remove_local_ref), NULL);
+  g_signal_connect (helper, "handle-load-cgroup-firewall", G_CALLBACK (handle_load_cgroup_firewall), NULL);
   g_signal_connect (helper, "handle-prune-local-repo", G_CALLBACK (handle_prune_local_repo), NULL);
   g_signal_connect (helper, "handle-ensure-repo", G_CALLBACK (handle_ensure_repo), NULL);
   g_signal_connect (helper, "handle-run-triggers", G_CALLBACK (handle_run_triggers), NULL);
